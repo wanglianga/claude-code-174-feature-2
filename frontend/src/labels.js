@@ -14,6 +14,7 @@ export const STATUS = {
   RECTIFYING: { label: '整改中', type: 'warning' },
   PENDING_ACCEPTANCE: { label: '待销号', type: 'success' },
   ACCEPTANCE_FAILED: { label: '验收不通过', type: 'danger' },
+  REWORK: { label: '返工整改', type: 'danger' },
   CLOSED: { label: '已销号', type: 'success' },
   REBOUND: { label: '问题反弹', type: 'danger' },
   REFUSED: { label: '拒绝整改', type: 'info' },
@@ -81,6 +82,19 @@ export const SUBSIDY_STATUS = {
   APPROVED: { label: '已批准（待销号发放）', type: 'primary' },
   REJECTED: { label: '已驳回', type: 'danger' },
   PAID: { label: '已发放', type: 'success' },
+  SUSPENDED: { label: '拨付暂停（偷换材料）', type: 'danger' },
+};
+
+export const MATERIAL_CHECK_STATUS = {
+  PENDING_EVIDENCE: { label: '待施工队举证', type: 'warning' },
+  UNDER_REVIEW: { label: '待验收判定', type: 'primary' },
+  CONFIRMED_SWAP: { label: '偷换属实·返工中', type: 'danger' },
+  EVIDENCE_OK: { label: '抽查/复验通过', type: 'success' },
+};
+
+export const MATERIAL_CHECK_VERDICT = {
+  CONFIRMED: '偷换属实',
+  NOT_SWAP: '不存在偷换',
 };
 
 export const ROLE_LABELS = {

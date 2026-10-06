@@ -20,9 +20,22 @@
           </el-table>
           <div v-if="archive.subsidy" style="margin-top:10px">
             申请金额：<b class="money">¥{{ Number(archive.subsidy.amount).toLocaleString() }}</b>
-            <el-tag style="margin-left:8px" :type="SUBSIDY_STATUS[archive.subsidy.status].type">{{ SUBSIDY_STATUS[archive.subsidy.status].label }}</el-tag>
+            <el-tag style="margin-left:8px" :type="SUBSIDY_STATUS[archive.subsidy.status]?.type || 'info'">{{ SUBSIDY_STATUS[archive.subsidy.status]?.label || archive.subsidy.status }}</el-tag>
             <div v-if="archive.subsidy.reviewComment" class="sub">复核意见：{{ archive.subsidy.reviewComment }}</div>
           </div>
+          <el-alert v-if="archive.subsidy?.paymentPaused || archive.subsidy?.status==='SUSPENDED'" type="error" :closable="false" show-icon
+            title="该户补助拨付已暂停（施工材料抽查偷换属实）" style="margin-top:10px">
+            <div class="sub">{{ archive.subsidy.pauseReason }}</div>
+            <div v-if="archive.subsidy.pausedAt" class="sub">暂停时间：{{ fmtDate(archive.subsidy.pausedAt) }}</div>
+            <el-table v-if="archive.subsidy.paymentSchedule?.length" :data="archive.subsidy.paymentSchedule" size="small" border style="margin-top:8px">
+              <el-table-column prop="node" label="重新安排的节点" min-width="160" />
+              <el-table-column prop="plannedDate" label="计划日期" width="120" />
+              <el-table-column prop="note" label="说明" min-width="180" />
+            </el-table>
+            <div class="sub" style="margin-top:6px">返工复验合格后自动恢复为"已批准"，仍须在验收销号后按新计划拨付。</div>
+          </el-alert>
+          <el-alert v-else-if="archive.subsidy?.resumedAt" type="success" :closable="false" show-icon style="margin-top:10px"
+            :title="`补助拨付已于 ${fmtDate(archive.subsidy.resumedAt)} 恢复（返工复验合格），待销号后按新计划拨付`" />
         </el-card>
       </el-col>
       <el-col :span="10">
@@ -58,7 +71,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import http from '../api';
-import { SUBSIDY_STATUS } from '../labels';
+import { SUBSIDY_STATUS, fmtDate } from '../labels';
 import { useAuthStore } from '../store';
 
 const props = defineProps(['archive']);

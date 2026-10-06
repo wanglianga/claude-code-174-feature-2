@@ -11,7 +11,13 @@
             <el-table-column label="结论" width="90">
               <template #default="{row}"><el-tag size="small" :type="row.result==='PASS'?'success':'danger'">{{ row.result==='PASS'?'合格':'不合格' }}</el-tag></template>
             </el-table-column>
-            <el-table-column prop="note" label="说明" />
+            <el-table-column prop="note" label="逐项核验意见" min-width="180" />
+            <el-table-column label="现场核验照片" width="150">
+              <template #default="{row}">
+                <el-link v-for="(u,i) in (row.photos||[])" :key="i" :href="u" target="_blank" type="primary" style="margin-right:8px">照片{{i+1}}</el-link>
+                <span v-if="!(row.photos&&row.photos.length)">—</span>
+              </template>
+            </el-table-column>
           </el-table>
         </el-timeline-item>
       </el-timeline>
@@ -19,11 +25,13 @@
     </el-card>
 
     <!-- 组织验收 -->
-    <el-card v-if="canAccept && acceptItems.length" shadow="never" style="margin-top:12px">
-      <template #header>组织验收（必改项须先完成施工；阻断性问题须办结）</template>
+    <el-card v-if="showAcceptCard" shadow="never" style="margin-top:12px">
+      <template #header>组织验收（必改项须先完成施工；阻断性问题须办结；返工后须对照原方案逐项确认）</template>
+      <el-alert type="warning" :closable="false" show-icon style="margin-bottom:8px"
+        title="不能只凭一张完工照片关闭任务：每一个必改项都要给出结论、填写逐项核验意见，判合格的必改项须上传该项现场核验照片，并勾选下方对照原方案确认。" />
       <el-table :data="acceptForm" size="small" border>
         <el-table-column label="整改项" width="170"><template #default="{row}">{{ ITEM_TYPES[row.itemType] }}（施工：{{ ITEM_STATUS[row.itemStatus]?.label }}）</template></el-table-column>
-        <el-table-column label="验收结论" width="220">
+        <el-table-column label="验收结论" width="200">
           <template #default="{row}">
             <el-radio-group v-model="row.result" size="small">
               <el-radio-button value="PASS">合格</el-radio-button>
@@ -31,10 +39,24 @@
             </el-radio-group>
           </template>
         </el-table-column>
-        <el-table-column label="备注"><template #default="{row}"><el-input v-model="row.note" size="small" /></template></el-table-column>
+        <el-table-column label="逐项核验意见" min-width="180">
+          <template #default="{row}"><el-input v-model="row.note" size="small" :placeholder="`对照原方案核验：${ITEM_TYPES[row.itemType]}`" /></template>
+        </el-table-column>
+        <el-table-column label="现场核验照片" width="190">
+          <template #default="{ row }">
+            <el-upload :action="uploadUrl" :headers="headers" :show-file-list="false"
+              :on-success="(r)=>{ row.photos = row.photos || []; row.photos.push(r.url); }">
+              <el-button size="small" :type="row.result==='PASS' && !(row.photos&&row.photos.length) ? 'danger' : ''">上传照片</el-button>
+            </el-upload>
+            <el-tag v-for="(u,i) in (row.photos||[])" :key="i" closable size="small" style="margin:2px" @close="row.photos.splice(i,1)">照片{{i+1}}</el-tag>
+          </template>
+        </el-table-column>
       </el-table>
       <el-input v-model="acceptComment" type="textarea" :rows="2" placeholder="验收总体意见" style="margin-top:8px" />
-      <el-button type="primary" style="margin-top:8px" @click="submitAcceptance">提交逐条验收结论</el-button>
+      <div style="margin-top:8px">
+        <el-checkbox v-model="confirmedAgainstPlan">我已对照原整改方案逐项核验（材料规格、施工质量逐项确认），并非仅凭一张完工照片作出结论</el-checkbox>
+      </div>
+      <el-button type="primary" style="margin-top:8px" @click="submitAcceptance">提交逐项验收结论</el-button>
     </el-card>
 
     <!-- 销号 -->
@@ -78,27 +100,42 @@ import { useAuthStore } from '../store';
 const props = defineProps(['archive']);
 const emit = defineEmits(['reload']);
 const auth = useAuthStore();
+const uploadUrl = '/api/upload';
+const headers = computed(() => ({ Authorization: `Bearer ${localStorage.getItem('rhs_token')}` }));
 const canAccept = ['ACCEPTOR', 'TOWNSHIP_REVIEWER', 'COUNTY_ADMIN'].includes(auth.role);
 const canRecheck = ['GRID_WORKER', 'ACCEPTOR', 'COUNTY_ADMIN'].includes(auth.role);
 const acceptComment = ref('');
+const confirmedAgainstPlan = ref(false);
 const closeForm = reactive({ confirmedAllItems: false, confirmedStopUseLifted: false });
 const acceptForm = ref([]);
 
 const acceptItems = computed(() => props.archive.plans?.[0]?.items?.filter((i) => i.required) || []);
+// 返工整改期间不开放验收入口，须先在"材料抽查"页签完成返工复验
+const showAcceptCard = computed(
+  () => canAccept && acceptItems.value.length && props.archive.house?.status !== 'REWORK',
+);
 function syncAccept() {
   acceptForm.value = acceptItems.value.map((it) => ({
-    itemId: it.id, itemType: it.type, itemStatus: it.status, result: it.status === 'FAILED' ? 'FAIL' : 'PASS', note: '',
+    itemId: it.id, itemType: it.type, itemStatus: it.status,
+    result: it.status === 'FAILED' ? 'FAIL' : 'PASS', note: '', photos: [],
   }));
 }
 watch(acceptItems, syncAccept, { immediate: true });
 
 async function submitAcceptance() {
+  if (!confirmedAgainstPlan.value) return ElMessage.warning('请先勾选"已对照原方案逐项核验"');
+  for (const r of acceptForm.value) {
+    if (!r.note || !r.note.trim()) return ElMessage.warning(`请填写「${ITEM_TYPES[r.itemType]}」的逐项核验意见`);
+    if (r.result === 'PASS' && !r.photos.length) return ElMessage.warning(`「${ITEM_TYPES[r.itemType]}」判合格须上传该项现场核验照片`);
+  }
   await http.post('/api/acceptances', {
     houseId: props.archive.house.id,
     comment: acceptComment.value,
+    confirmedAgainstPlan: confirmedAgainstPlan.value,
     itemResults: acceptForm.value,
   });
   ElMessage.success('验收结论已提交');
+  confirmedAgainstPlan.value = false;
   emit('reload');
 }
 async function closeHouse() {

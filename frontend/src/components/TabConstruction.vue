@@ -96,7 +96,8 @@
       <el-form :model="planForm" label-width="90px">
         <el-form-item label="施工队">
           <el-select v-model="planForm.teamId" style="width:100%">
-            <el-option v-for="t in teams" :key="t.id" :value="t.id" :label="`${t.name}（资质：${t.qualificationNo||'无'}${t.qualified?' 有效':' 已失效'}）`" />
+            <el-option v-for="t in teams" :key="t.id" :value="t.id" :disabled="t.restricted"
+              :label="`${t.name}（资质：${t.qualificationNo||'无'}${t.qualified?' 有效':' 已失效'}${t.restricted?' 限制接单':''}）`" />
           </el-select>
         </el-form-item>
         <el-form-item label="工期">

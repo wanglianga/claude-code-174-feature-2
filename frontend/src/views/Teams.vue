@@ -10,11 +10,18 @@
       <el-table-column label="资质状态" width="120">
         <template #default="{ row }"><el-tag :type="row.qualified?'success':'danger'">{{ row.qualified ? '有效' : '失效/无资质' }}</el-tag></template>
       </el-table-column>
+      <el-table-column label="接单状态" width="160">
+        <template #default="{ row }">
+          <el-tag v-if="row.restricted" type="danger" effect="dark">限制接单</el-tag>
+          <el-tag v-else type="success" effect="plain">正常接单</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="restrictedReason" label="限制原因（材料抽查偷换属实）" min-width="220" />
       <el-table-column prop="scope" label="允许施工范围" min-width="200" />
       <el-table-column prop="contact" label="联系人" width="100" />
       <el-table-column prop="phone" label="电话" width="130" />
     </el-table>
-    <div class="hint">无有效资质的施工队无法被农户选择承接加固施工（后端强制校验）。</div>
+    <div class="hint">无有效资质的施工队无法被农户选择承接加固施工；被列入限制接单名单（材料抽查偷换属实）的施工队，在返工复验合格、解除限制前不得承接任何新工程（后端强制校验）。</div>
 
     <el-dialog v-model="show" title="新增施工队" width="560px">
       <el-form :model="form" label-width="120px">

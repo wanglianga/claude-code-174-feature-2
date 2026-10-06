@@ -24,6 +24,7 @@ import {
   Stakeholder,
   SubsidyApplication,
   User,
+  MaterialCheck,
 } from './entities';
 import { AppService } from './app.service';
 import { AppController } from './app.controller';
@@ -34,7 +35,7 @@ import { SeedService } from './seed.service';
 const entities = [
   User, House, Inspection, ReviewPlan, RectificationItem, NoticeRecord, EvacuationRecord,
   Stakeholder, Consultation, IssueRecord, FamilyProfile, ConstructionTeam, ConstructionPlan,
-  BudgetItem, SubsidyApplication, ConstructionLog, Acceptance, AcceptanceItemResult,
+  BudgetItem, SubsidyApplication, ConstructionLog, MaterialCheck, Acceptance, AcceptanceItemResult,
   CloseRecord, RecheckRecord, HouseActivity,
 ];
 

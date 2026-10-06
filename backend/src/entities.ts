@@ -34,6 +34,7 @@ export enum HouseStatus {
   RECTIFYING = 'RECTIFYING', // 整改中
   PENDING_ACCEPTANCE = 'PENDING_ACCEPTANCE', // 待验收
   ACCEPTANCE_FAILED = 'ACCEPTANCE_FAILED', // 验收不通过
+  REWORK = 'REWORK', // 返工整改（抽查偷换属实/验收不通过退回）
   CLOSED = 'CLOSED', // 已销号
   REBOUND = 'REBOUND', // 复查反弹/重新治理
   REFUSED = 'REFUSED', // 农户拒绝整改
@@ -101,11 +102,25 @@ export enum SubsidyStatus {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
   PAID = 'PAID',
+  SUSPENDED = 'SUSPENDED', // 偷换材料属实，补助拨付暂停
 }
 
 export enum AcceptanceResult {
   PASS = 'PASS',
   FAIL = 'FAIL',
+}
+
+// 施工材料抽查
+export enum MaterialCheckStatus {
+  PENDING_EVIDENCE = 'PENDING_EVIDENCE', // 已发起抽查，待施工队举证
+  UNDER_REVIEW = 'UNDER_REVIEW', // 已举证，待验收人员判定
+  CONFIRMED_SWAP = 'CONFIRMED_SWAP', // 偷换属实，退回返工
+  EVIDENCE_OK = 'EVIDENCE_OK', // 举证有效/抽查通过，材料符合方案
+}
+
+export enum MaterialCheckVerdict {
+  CONFIRMED = 'CONFIRMED', // 偷换属实
+  NOT_SWAP = 'NOT_SWAP', // 举证充分，不存在偷换
 }
 
 // ---------- 用户 ----------
@@ -441,6 +456,14 @@ export class ConstructionTeam {
   phone: string;
   @Column({ type: 'text', nullable: true })
   scope: string;
+  @Column({ default: false })
+  restricted: boolean; // 是否进入限制接单名单（抽查偷换材料属实）
+  @Column({ type: 'text', nullable: true })
+  restrictedReason: string; // 限制接单原因
+  @Column({ type: 'timestamptz', nullable: true })
+  restrictedAt: Date; // 进入限制名单时间
+  @Column({ type: 'timestamptz', nullable: true })
+  unrestrictedAt: Date; // 解除限制时间
 }
 
 // ---------- 施工计划与预算明细 ----------
@@ -516,6 +539,16 @@ export class SubsidyApplication {
   reviewedAt: Date;
   @Column({ type: 'timestamptz', nullable: true })
   paidAt: Date;
+  @Column({ default: false })
+  paymentPaused: boolean; // 偷换材料属实，农户补助拨付暂停
+  @Column({ type: 'text', nullable: true })
+  pauseReason: string;
+  @Column({ type: 'timestamptz', nullable: true })
+  pausedAt: Date;
+  @Column({ type: 'timestamptz', nullable: true })
+  resumedAt: Date;
+  @Column({ type: 'simple-json', nullable: true })
+  paymentSchedule: { node: string; plannedDate: string; amount: string; note?: string }[]; // 返工后重新安排的补助拨付计划
   @CreateDateColumn()
   createdAt: Date;
 }
@@ -547,7 +580,88 @@ export class ConstructionLog {
   recorderId: string;
 }
 
-// ---------- 验收 ----------
+// ---------- 施工材料抽查 ----------
+@Entity('material_checks')
+export class MaterialCheck {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+  @Column()
+  houseId: string;
+  @Column({ nullable: true })
+  planId: string;
+  @Column({ nullable: true })
+  teamId: string;
+  @Column({ nullable: true })
+  teamName: string;
+  @Column({ nullable: true })
+  budgetItemId: string;
+  @Column({ nullable: true })
+  materialName: string; // 被抽查材料，如 钢梁/钢筋/防水卷材
+  @Column({ nullable: true })
+  expectedSpec: string; // 方案/预算要求规格
+  @Column({ nullable: true })
+  actualSpec: string; // 现场发现的实际规格
+  @Column({ type: 'varchar', length: 24, default: MaterialCheckStatus.PENDING_EVIDENCE })
+  status: MaterialCheckStatus;
+  @Column({ type: 'text' })
+  finding: string; // 验收人员发现的问题（如钢梁规格与方案不一致）
+  @Column({ type: 'simple-json', nullable: true })
+  findingPhotos: string[]; // 加固完成照片/现场取证照片
+  @Column()
+  raisedById: string;
+  @Column({ nullable: true })
+  raisedByName: string;
+  @Column({ type: 'timestamptz' })
+  raisedAt: Date;
+
+  // 施工队举证：材料发票、进场照片、现场测量结果
+  @Column({ type: 'simple-json', nullable: true })
+  invoiceFiles: string[]; // 材料发票
+  @Column({ type: 'simple-json', nullable: true })
+  entryPhotos: string[]; // 材料进场照片
+  @Column({ type: 'simple-json', nullable: true })
+  measureResults: { item: string; expected: string; measured: string; conform: boolean }[]; // 现场测量结果
+  @Column({ type: 'text', nullable: true })
+  evidenceNote: string;
+  @Column({ type: 'timestamptz', nullable: true })
+  evidencedAt: Date;
+  @Column({ nullable: true })
+  evidencedById: string;
+
+  // 判定
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  verdict: MaterialCheckVerdict;
+  @Column({ type: 'text', nullable: true })
+  verdictNote: string;
+  @Column({ type: 'timestamptz', nullable: true })
+  verdictAt: Date;
+  @Column({ nullable: true })
+  verdictById: string;
+
+  // 属实后的返工与重新安排
+  @Column({ type: 'date', nullable: true })
+  reworkDeadline: string; // 返工整改期限
+  @Column({ type: 'date', nullable: true })
+  replannedAcceptanceDate: string; // 重新安排的验收节点
+  @Column({ type: 'date', nullable: true })
+  replannedPaymentDate: string; // 重新安排的补助拨付计划日期
+  @Column({ type: 'text', nullable: true })
+  reworkRequirement: string; // 返工整改要求
+  @Column({ type: 'text', nullable: true })
+  reworkDescription: string; // 施工队整改说明
+  @Column({ type: 'simple-json', nullable: true })
+  reworkPhotos: string[]; // 整改后照片
+  @Column({ type: 'timestamptz', nullable: true })
+  reworkSubmittedAt: Date;
+  @Column({ type: 'text', nullable: true })
+  requalifyNote: string; // 复验结论说明
+  @Column({ type: 'timestamptz', nullable: true })
+  requalifiedAt: Date;
+  @Column({ nullable: true })
+  issueId: string; // 关联的阻断异常
+  @CreateDateColumn()
+  createdAt: Date;
+}
 @Entity('acceptances')
 export class Acceptance {
   @PrimaryGeneratedColumn('uuid')
@@ -564,6 +678,8 @@ export class Acceptance {
   acceptedAt: Date;
   @Column({ type: 'varchar', length: 8 })
   overall: AcceptanceResult;
+  @Column({ default: false })
+  confirmedAgainstPlan: boolean; // 验收人员是否已对照原方案逐项确认（不能只凭一张完工照片）
   @Column({ type: 'text', nullable: true })
   comment: string;
   @OneToMany(() => AcceptanceItemResult, (r) => r.acceptance, { cascade: true })

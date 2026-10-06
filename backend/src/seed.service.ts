@@ -80,6 +80,7 @@ export class SeedService implements OnApplicationBootstrap {
     const farmer1 = await this.mkUser('farmer1', '王德福', UserRole.FARMER, '溪口镇');
     const farmer2 = await this.mkUser('farmer2', '李秀兰', UserRole.FARMER, '云岭乡');
     const farmer3 = await this.mkUser('farmer3', '张大山', UserRole.FARMER, '青山镇');
+    const farmer4 = await this.mkUser('farmer4', '赵铁生', UserRole.FARMER, '青山镇');
 
     const teamA = await this.teams.save(
       this.teams.create({
@@ -104,6 +105,19 @@ export class SeedService implements OnApplicationBootstrap {
       }),
     );
     const teamUser = await this.mkUser('team1', '钱工（安泰施工队）', UserRole.TEAM, undefined, teamA.id);
+
+    const teamC = await this.teams.save(
+      this.teams.create({
+        name: '宏固钢结构施工队',
+        qualificationNo: 'XKJZ-2025-031',
+        qualificationDoc: ['/uploads/demo-qual-c.jpg'],
+        qualified: true,
+        contact: '周队长',
+        phone: '13900003333',
+        scope: '钢结构加固、承重墙增设钢梁、屋面钢檩更换',
+      }),
+    );
+    const teamUserC = await this.mkUser('team2', '周队长（宏固施工队）', UserRole.TEAM, undefined, teamC.id);
 
     // ---------- 房屋A：全流程已销号，补助已发，复查通过 ----------
     {
@@ -186,8 +200,9 @@ export class SeedService implements OnApplicationBootstrap {
 
       await this.svc.createAcceptance(acceptor, {
         houseId,
+        confirmedAgainstPlan: true,
         comment: '逐项核验：加层已拆除、承重墙加固合格、安置到位、警示规范',
-        itemResults: plan.items.map((it) => ({ itemId: it.id, itemType: it.type, result: AcceptanceResult.PASS, note: '现场核验合格' })),
+        itemResults: plan.items.map((it) => ({ itemId: it.id, itemType: it.type, result: AcceptanceResult.PASS, note: '现场核验合格', photos: ['/uploads/demo-acc-1.jpg'] })),
       });
       await this.svc.closeHouse(county, {
         houseId, confirmedAllItems: true, confirmedStopUseLifted: true,
@@ -356,10 +371,10 @@ export class SeedService implements OnApplicationBootstrap {
       });
       await this.svc.setItemStatus(town1, plan.items[1].id, ItemStatus.DONE);
       await this.svc.createAcceptance(acceptor, {
-        houseId, comment: '现场仍有缝纫设备和工人留宿，清退不彻底；拆除断面未封闭',
+        houseId, confirmedAgainstPlan: true, comment: '现场仍有缝纫设备和工人留宿，清退不彻底；拆除断面未封闭',
         itemResults: [
-          { itemId: plan.items[0].id, itemType: plan.items[0].type, result: AcceptanceResult.FAIL, note: '拆除后断面未做防护' },
-          { itemId: plan.items[1].id, itemType: plan.items[1].type, result: AcceptanceResult.FAIL, note: '仍有工人留宿，经营未清退' },
+          { itemId: plan.items[0].id, itemType: plan.items[0].type, result: AcceptanceResult.FAIL, note: '拆除后断面未做防护', photos: ['/uploads/demo-acc-e1.jpg'] },
+          { itemId: plan.items[1].id, itemType: plan.items[1].type, result: AcceptanceResult.FAIL, note: '仍有工人留宿，经营未清退', photos: ['/uploads/demo-acc-e2.jpg'] },
         ],
       });
     }
@@ -408,13 +423,98 @@ export class SeedService implements OnApplicationBootstrap {
         itemId: plan.items[1].id, itemStatus: ItemStatus.DONE,
       });
       await this.svc.createAcceptance(acceptor, {
-        houseId, comment: '合格',
-        itemResults: plan.items.map((it) => ({ itemId: it.id, itemType: it.type, result: AcceptanceResult.PASS })),
+        houseId, confirmedAgainstPlan: true, comment: '合格',
+        itemResults: plan.items.map((it) => ({ itemId: it.id, itemType: it.type, result: AcceptanceResult.PASS, note: '现场核验合格', photos: ['/uploads/demo-acc-f.jpg'] })),
       });
       await this.svc.closeHouse(county, { houseId, confirmedAllItems: true, confirmedStopUseLifted: true });
       await this.svc.createRecheck(grid3, {
         houseId, result: AcceptanceResult.FAIL, wallCrack: 2,
         reboundNotes: '复查发现原加固墙体旁出现新贯通裂缝，疑似相邻新建房施工影响，问题反弹',
+      });
+    }
+
+    // ---------- 房屋G：钢梁抽查偷换属实→限制接单/补助暂停/返工重排 ----------
+    {
+      const insp = await this.svc.createInspection(grid3, {
+        code: 'NF-QS-000007',
+        township: '青山镇', village: '石岗村', address: '石岗村后街12号',
+        ownerName: '赵铁生', ownerPhone: '13811110007',
+        buildYear: 1999, floors: 2, usage: '自住',
+        wallCrack: 2, roofLeak: 1, foundationSettlement: 1, residents: 2,
+        notes: '一层承重墙贯通裂缝，复核方案要求增设钢梁加固，施工队已提交加固完成照片',
+      });
+      const houseId = insp.house.id;
+      const plan = await this.svc.createReview(town3, {
+        inspectionId: insp.inspection.id,
+        decision: RiskLevel.SUSPEND,
+        requirement: '暂停住用，在一层承重墙体增设 H 型钢梁托换，裂缝墙体钢筋网抹面加固，设置危房警示，经逐项验收合格后方可住用。',
+        deadline: this.dateStr(25),
+        items: [
+          { type: 'REINFORCE_WALL', description: '一层承重墙增设 H 型钢梁（H400×200）托换加固' },
+          { type: 'SET_WARNING', description: '房屋周边设置围挡与危房警示标志' },
+        ],
+      });
+      await this.svc.createNotice(grid3, {
+        houseId, method: '书面送达', notifiedTo: ['户主赵铁生'], acknowledged: true,
+        content: '评定为暂停使用等级，须按方案采用 H400×200 钢梁加固，限期25日',
+      });
+      await this.svc.confirmStopUse(grid3, houseId, { confirmed: true, remark: '门口张贴停用通知并拉设警戒线' });
+      await this.svc.upsertFamily(houseId, {
+        difficultyType: DifficultyType.VETERAN,
+        difficultyProof: ['/uploads/demo-fuyou.jpg'],
+        ownershipProof: ['/uploads/demo-quanshu5.jpg'],
+        ownerConsent: true,
+        membersNote: '户主为退伍优抚对象，夫妻二人居住，配合停用搬迁',
+      });
+      await this.svc.submitConstructionPlan(farmer4, {
+        houseId, teamId: teamC.id, startDate: this.dateStr(1), endDate: this.dateStr(20),
+        description: '按方案钢梁托换加固，钢梁为关键受力构件',
+        budgetItems: [
+          { name: 'H型钢梁', spec: 'H400×200×8×13', qty: 6, unit: '根', unitPrice: 3200 },
+          { name: '商品混凝土', spec: 'C30', qty: 6, unit: 'm³', unitPrice: 480 },
+          { name: '钢筋', spec: 'HRB400 12mm', qty: 0.8, unit: '吨', unitPrice: 4600 },
+          { name: '围挡警示', spec: '', qty: 1, unit: '项', unitPrice: 1500 },
+        ],
+      });
+      const sub = await this.svc.submitSubsidy(farmer4, houseId, { amount: 18000 });
+      await this.svc.reviewSubsidy(town3, sub.application.id, { approved: true, comment: '优抚对象，材料齐全，同意补助，验收销号后发放' });
+      // 施工队上报进度并提交加固完成照片
+      await this.svc.addConstructionLog(teamUserC, {
+        houseId, stage: '墙体加固', content: '钢梁安装完成，提交加固完成照片申请验收', progressPercent: 100,
+        materialName: 'H型钢梁', materialSpec: 'H400×200×8×13',
+        itemId: plan.items[0].id, itemStatus: ItemStatus.DONE,
+        photos: ['/uploads/demo-steelbeam-done.jpg'],
+      });
+      await this.svc.setItemStatus(town3, plan.items[1].id, ItemStatus.DONE);
+
+      // 验收人员看完工照片抽查发现钢梁规格与方案不一致，发起材料抽查
+      const check = await this.svc.createMaterialCheck(acceptor, {
+        houseId,
+        materialName: 'H型钢梁',
+        actualSpec: 'H350×175×7×11',
+        finding: '施工队提交加固完成照片后，现场抽查发现实际安装钢梁截面高度、翼缘宽度均小于方案要求（现场为 H350×175，方案为 H400×200），钢梁受力规格与方案不一致，平台要求施工队上传材料发票、进场照片和现场测量结果。',
+        findingPhotos: ['/uploads/demo-steelbeam-check.jpg'],
+      });
+      // 施工队举证
+      await this.svc.submitMaterialEvidence(teamUserC, check.id, {
+        invoiceFiles: ['/uploads/demo-invoice-steel.jpg'],
+        entryPhotos: ['/uploads/demo-steel-entry.jpg'],
+        measureResults: [
+          { item: '钢梁截面高度 h', expected: '400mm', measured: '350mm', conform: false },
+          { item: '翼缘宽度 b', expected: '200mm', measured: '175mm', conform: false },
+          { item: '腹板厚度 tw', expected: '8mm', measured: '7mm', conform: false },
+          { item: '翼缘厚度 tf', expected: '13mm', measured: '11mm', conform: false },
+        ],
+        evidenceNote: '提交发票与进场照片，但现场实测数据与方案规格不符，自认以小截面钢梁代替',
+      });
+      // 验收判定偷换属实：限制接单、补助暂停、回返工、重排验收与拨付
+      await this.svc.verdictMaterialCheck(acceptor, check.id, {
+        verdict: 'CONFIRMED',
+        verdictNote: '经核对发票、进场照片及现场测量结果，实际安装 H350×175×7×11 钢梁，与方案 H400×200×8×13 不一致，偷换材料属实，关键受力构件不得以小代大。',
+        reworkDeadline: this.dateStr(15),
+        replannedAcceptanceDate: this.dateStr(18),
+        replannedPaymentDate: this.dateStr(22),
+        reworkRequirement: '拆除全部 6 根 H350×175 钢梁，更换为方案要求的 H400×200×8×13 合格钢梁并重新托换焊接，完成后报验收人员对照原方案逐项复验。',
       });
     }
 

@@ -22,6 +22,9 @@ import {
   IssueStatus,
   IssueType,
   ItemStatus,
+  MaterialCheck,
+  MaterialCheckStatus,
+  MaterialCheckVerdict,
   NoticeRecord,
   RectificationItem,
   RecheckRecord,
@@ -64,6 +67,7 @@ export class AppService {
     @InjectRepository(BudgetItem) private budgetItems: Repository<BudgetItem>,
     @InjectRepository(SubsidyApplication) private subsidies: Repository<SubsidyApplication>,
     @InjectRepository(ConstructionLog) private logs: Repository<ConstructionLog>,
+    @InjectRepository(MaterialCheck) private materialChecks: Repository<MaterialCheck>,
     @InjectRepository(Acceptance) private acceptances: Repository<Acceptance>,
     @InjectRepository(AcceptanceItemResult) private results: Repository<AcceptanceItemResult>,
     @InjectRepository(CloseRecord) private closes: Repository<CloseRecord>,
@@ -505,6 +509,12 @@ export class AppService {
     if (!team.qualified || !team.qualificationNo) {
       throw new BadRequestException(`施工队「${team.name}」资质无效或已过期，不得承担农房加固施工`);
     }
+    // 限制接单名单：抽查偷换材料属实的施工队在解除限制前不得承接新工程
+    if (team.restricted) {
+      throw new BadRequestException(
+        `施工队「${team.name}」因偷换材料已被列入限制接单名单（${team.restrictedReason || ''}），解除限制前不得承接施工任务`,
+      );
+    }
 
     // 预算明细
     if (!body.budgetItems || !body.budgetItems.length) throw new BadRequestException('请填写预算明细');
@@ -617,6 +627,10 @@ export class AppService {
 
   async submitSubsidy(u: CurrentUser, houseId: string, body: any) {
     const house = await this.getHouseOrFail(houseId);
+    const existing = await this.subsidies.findOne({ where: { houseId } });
+    if (existing?.paymentPaused) {
+      throw new BadRequestException('该户补助因材料抽查偷换属实已暂停拨付，须返工复验合格后恢复，不能重新提交申请');
+    }
     const guards = await this.computeSubsidyGuards(house);
     const allPass = guards.every((g) => g.ok);
     const cplan = await this.cplans.findOne({ where: { houseId } });
@@ -673,6 +687,9 @@ export class AppService {
   async paySubsidy(u: CurrentUser, id: string) {
     const app = await this.subsidies.findOne({ where: { id } });
     if (!app) throw new NotFoundException();
+    if (app.paymentPaused) {
+      throw new BadRequestException('该户补助拨付已暂停（施工材料抽查偷换属实），须返工复验合格、恢复拨付计划后方可发放');
+    }
     if (app.status !== SubsidyStatus.APPROVED) throw new BadRequestException('仅已批准的申请可发放');
     const close = await this.closes.findOne({ where: { houseId: app.houseId } });
     if (!close) throw new BadRequestException('房屋未完成验收销号，补助不得提前发放（防止“带病拨款”）');
@@ -769,6 +786,305 @@ export class AppService {
     return item;
   }
 
+  // ---------- 施工材料抽查（举证→判定→返工→复验）----------
+  async createMaterialCheck(u: CurrentUser, body: any) {
+    const house = await this.getHouseOrFail(body.houseId);
+    if (house.status === HouseStatus.CLOSED) throw new BadRequestException('房屋已销号');
+    const plan = await this.latestPlan(house.id);
+    if (!plan) throw new BadRequestException('尚未形成整改方案');
+    const cplan = await this.cplans.findOne({ where: { houseId: house.id }, relations: ['budgetItems'] });
+    if (!cplan) throw new BadRequestException('尚未提交施工计划，无法抽查材料');
+    if (!body.finding) throw new BadRequestException('请描述抽查发现（如钢梁规格与方案不一致的具体情况）');
+
+    // 从预算明细中带出方案要求规格
+    let expectedSpec = body.expectedSpec || '';
+    let budgetItemId = body.budgetItemId || null;
+    if (body.materialName) {
+      const hit = cplan.budgetItems.find((b) => b.name === body.materialName);
+      if (hit) {
+        expectedSpec = expectedSpec || hit.spec || '';
+        budgetItemId = budgetItemId || hit.id;
+      }
+    }
+    // 同一房屋存在待举证/待判定的抽查时，不重复发起
+    const dup = await this.materialChecks.findOne({
+      where: { houseId: house.id, status: In([MaterialCheckStatus.PENDING_EVIDENCE, MaterialCheckStatus.UNDER_REVIEW]) },
+    });
+    if (dup) throw new BadRequestException('该房屋已有进行中的材料抽查，请先完成举证与判定');
+
+    const check = await this.materialChecks.save(
+      this.materialChecks.create({
+        houseId: house.id,
+        planId: plan.id,
+        teamId: cplan.teamId,
+        teamName: cplan.teamName,
+        budgetItemId,
+        materialName: body.materialName || null,
+        expectedSpec,
+        actualSpec: body.actualSpec || null,
+        status: MaterialCheckStatus.PENDING_EVIDENCE,
+        finding: body.finding,
+        findingPhotos: body.findingPhotos || [],
+        raisedById: u.sub,
+        raisedByName: u.name,
+        raisedAt: new Date(),
+      }),
+    );
+    await this.logActivity(
+      house.id,
+      'MATERIAL',
+      `施工材料抽查发起：${body.materialName ? body.materialName + ' ' : ''}规格存疑`,
+      `方案要求：${expectedSpec || '—'}；现场发现：${body.actualSpec || '—'}；${body.finding}。平台已要求施工队上传材料发票、进场照片和现场测量结果。`,
+      u,
+    );
+    return check;
+  }
+
+  async submitMaterialEvidence(u: CurrentUser, id: string, body: any) {
+    const check = await this.materialChecks.findOne({ where: { id } });
+    if (!check) throw new NotFoundException('抽查记录不存在');
+    if (check.status !== MaterialCheckStatus.PENDING_EVIDENCE) {
+      throw new BadRequestException('该抽查不处于待举证状态');
+    }
+    // 施工队只能为本队承接的工程举证
+    if (u.role === 'TEAM' && u.teamId && check.teamId && check.teamId !== u.teamId) {
+      throw new ForbiddenException('该工程不是本施工队承接的项目');
+    }
+    if (!body.invoiceFiles?.length) throw new BadRequestException('必须上传材料发票');
+    if (!body.entryPhotos?.length) throw new BadRequestException('必须上传材料进场照片');
+    if (!body.measureResults?.length) throw new BadRequestException('必须填写现场测量结果');
+    for (const m of body.measureResults) {
+      if (!m.item || m.measured === undefined || m.measured === null || m.measured === '') {
+        throw new BadRequestException('现场测量结果须包含测量项与实测值');
+      }
+    }
+
+    check.invoiceFiles = body.invoiceFiles;
+    check.entryPhotos = body.entryPhotos;
+    check.measureResults = body.measureResults;
+    check.evidenceNote = body.evidenceNote || '';
+    check.evidencedAt = new Date();
+    check.evidencedById = u.sub;
+    check.status = MaterialCheckStatus.UNDER_REVIEW;
+    await this.materialChecks.save(check);
+    await this.logActivity(
+      check.houseId,
+      'MATERIAL',
+      '施工队已提交抽查举证材料',
+      `发票 ${body.invoiceFiles.length} 份、进场照片 ${body.entryPhotos.length} 张、现场测量 ${body.measureResults.length} 项，待验收人员判定。${body.evidenceNote || ''}`,
+      u,
+    );
+    return check;
+  }
+
+  async verdictMaterialCheck(u: CurrentUser, id: string, body: any) {
+    const check = await this.materialChecks.findOne({ where: { id } });
+    if (!check) throw new NotFoundException('抽查记录不存在');
+    if (check.status !== MaterialCheckStatus.UNDER_REVIEW) {
+      throw new BadRequestException('仅已完成举证、待判定的抽查可出具判定结论');
+    }
+    if (body.verdict !== MaterialCheckVerdict.CONFIRMED && body.verdict !== MaterialCheckVerdict.NOT_SWAP) {
+      throw new BadRequestException('判定结论无效');
+    }
+    if (!body.verdictNote) throw new BadRequestException('请填写判定依据');
+
+    return this.dataSource.transaction(async (m) => {
+      check.verdict = body.verdict;
+      check.verdictNote = body.verdictNote;
+      check.verdictAt = new Date();
+      check.verdictById = u.sub;
+
+      if (body.verdict === MaterialCheckVerdict.NOT_SWAP) {
+        check.status = MaterialCheckStatus.EVIDENCE_OK;
+        await m.save(check);
+        await m.save(
+          m.create(HouseActivity, {
+            houseId: check.houseId,
+            kind: 'MATERIAL',
+            title: '材料抽查结论：举证充分，不存在偷换',
+            detail: body.verdictNote,
+            operatorId: u.sub,
+            operatorName: u.name,
+          }),
+        );
+        return check;
+      }
+
+      // ---------- 偷换属实 ----------
+      if (!body.reworkDeadline || !body.replannedAcceptanceDate || !body.replannedPaymentDate) {
+        throw new BadRequestException('偷换属实时须重新安排返工期限、验收节点与补助拨付计划日期');
+      }
+      check.status = MaterialCheckStatus.CONFIRMED_SWAP;
+      check.reworkDeadline = body.reworkDeadline;
+      check.replannedAcceptanceDate = body.replannedAcceptanceDate;
+      check.replannedPaymentDate = body.replannedPaymentDate;
+      check.reworkRequirement = body.reworkRequirement || `拆除偷换材料，按原方案「${check.materialName || ''} ${check.expectedSpec || ''}」重新采购施工`;
+
+      // 1. 开阻断异常（冻结验收/销号/新施工计划）
+      const issue = await m.save(
+        m.create(IssueRecord, {
+          houseId: check.houseId,
+          type: IssueType.MATERIAL_SWAP,
+          description: `材料抽查偷换属实：${check.materialName || '材料'} 方案要求「${check.expectedSpec || '—'}」，现场为「${check.actualSpec || '—'}」。${body.verdictNote}`,
+          status: IssueStatus.OPEN,
+          blocksWorkflow: true,
+          raisedById: u.sub,
+          raisedByName: u.name,
+          raisedAt: new Date(),
+        }),
+      );
+      check.issueId = issue.id;
+
+      // 2. 施工队进入限制接单名单
+      if (check.teamId) {
+        const team = await m.findOne(ConstructionTeam, { where: { id: check.teamId } });
+        if (team) {
+          team.restricted = true;
+          team.restrictedReason = `承接房屋材料抽查偷换属实（${check.materialName || '材料'}：方案 ${check.expectedSpec || '—'} / 现场 ${check.actualSpec || '—'}）`;
+          team.restrictedAt = new Date();
+          team.unrestrictedAt = null;
+          await m.save(team);
+        }
+      }
+
+      // 3. 农户补助拨付暂停，并重排拨付计划
+      const subsidy = await m.findOne(SubsidyApplication, { where: { houseId: check.houseId } });
+      if (subsidy) {
+        subsidy.paymentPaused = true;
+        subsidy.pauseReason = '施工材料抽查偷换属实，补助拨付暂停，待返工复验合格后按新计划拨付';
+        subsidy.pausedAt = new Date();
+        subsidy.resumedAt = null;
+        subsidy.status = SubsidyStatus.SUSPENDED;
+        subsidy.paymentSchedule = [
+          { node: '返工整改完成', plannedDate: body.reworkDeadline, amount: '0.00', note: check.reworkRequirement },
+          { node: '重新组织逐项验收', plannedDate: body.replannedAcceptanceDate, amount: '0.00', note: '验收人员对照原方案逐项确认' },
+          { node: '验收销号后拨付补助', plannedDate: body.replannedPaymentDate, amount: Number(subsidy.amount).toFixed(2), note: '复验合格、销号后按新计划拨付' },
+        ];
+        await m.save(subsidy);
+      }
+
+      // 4. 整改任务回到返工状态：必改项全部退回待施工
+      const plan = await m.findOne(ReviewPlan, { where: { id: check.planId }, relations: ['items'] });
+      if (plan) {
+        for (const it of plan.items.filter((x) => x.required)) {
+          it.status = ItemStatus.PENDING;
+          await m.save(it);
+        }
+      }
+
+      // 5. 房屋回到返工状态
+      const house = await m.findOne(House, { where: { id: check.houseId } });
+      house.status = HouseStatus.REWORK;
+      await m.save(house);
+
+      await m.save(check);
+      await m.save(
+        m.create(HouseActivity, {
+          houseId: check.houseId,
+          kind: 'MATERIAL',
+          title: '抽查判定偷换材料属实：施工队限制接单、补助暂停、工程退回返工',
+          detail: `返工期限 ${body.reworkDeadline}；重新验收节点 ${body.replannedAcceptanceDate}；补助拨付计划顺延至 ${body.replannedPaymentDate}（销号后拨付）。${check.reworkRequirement}`,
+          operatorId: u.sub,
+          operatorName: u.name,
+        }),
+      );
+      return check;
+    });
+  }
+
+  async submitRework(u: CurrentUser, id: string, body: any) {
+    const check = await this.materialChecks.findOne({ where: { id } });
+    if (!check) throw new NotFoundException('抽查记录不存在');
+    if (check.status !== MaterialCheckStatus.CONFIRMED_SWAP) {
+      throw new BadRequestException('仅偷换属实、处于返工状态的抽查可提交整改');
+    }
+    if (u.role === 'TEAM' && u.teamId && check.teamId && check.teamId !== u.teamId) {
+      throw new ForbiddenException('该工程不是本施工队承接的项目');
+    }
+    if (!body.reworkDescription) throw new BadRequestException('请填写整改说明（如何按原方案更换材料、重新施工）');
+    if (!body.reworkPhotos?.length) throw new BadRequestException('请上传整改完成照片（钢梁/材料更换后的现场照片）');
+
+    check.reworkDescription = body.reworkDescription;
+    check.reworkPhotos = body.reworkPhotos;
+    check.reworkSubmittedAt = new Date();
+    await this.materialChecks.save(check);
+    await this.logActivity(
+      check.houseId,
+      'CONSTRUCTION',
+      '施工队提交返工整改结果，待复验',
+      `${body.reworkDescription}（整改照片 ${body.reworkPhotos.length} 张）`,
+      u,
+    );
+    return check;
+  }
+
+  async requalifyMaterialCheck(u: CurrentUser, id: string, body: any) {
+    const check = await this.materialChecks.findOne({ where: { id } });
+    if (!check) throw new NotFoundException('抽查记录不存在');
+    if (check.status !== MaterialCheckStatus.CONFIRMED_SWAP || !check.reworkSubmittedAt) {
+      throw new BadRequestException('施工队尚未提交返工整改结果，不能复验');
+    }
+    if (!body.requalifyNote) throw new BadRequestException('请填写复验结论（对照原方案逐项核验情况）');
+
+    return this.dataSource.transaction(async (m) => {
+      check.status = MaterialCheckStatus.EVIDENCE_OK;
+      check.requalifyNote = body.requalifyNote;
+      check.requalifiedAt = new Date();
+
+      // 阻断异常办结（处置结果必填）
+      if (check.issueId) {
+        const issue = await m.findOne(IssueRecord, { where: { id: check.issueId } });
+        if (issue && issue.status !== IssueStatus.RESOLVED) {
+          issue.status = IssueStatus.RESOLVED;
+          issue.resolution = `返工复验合格：${body.requalifyNote}`;
+          issue.resolvedAt = new Date();
+          await m.save(issue);
+        }
+      }
+      // 解除施工队限制接单
+      if (check.teamId) {
+        const team = await m.findOne(ConstructionTeam, { where: { id: check.teamId } });
+        if (team && team.restricted) {
+          team.restricted = false;
+          team.unrestrictedAt = new Date();
+          await m.save(team);
+        }
+      }
+      // 恢复补助拨付（仍须销号后发放）
+      const subsidy = await m.findOne(SubsidyApplication, { where: { houseId: check.houseId } });
+      if (subsidy && subsidy.paymentPaused) {
+        subsidy.paymentPaused = false;
+        subsidy.resumedAt = new Date();
+        subsidy.status = SubsidyStatus.APPROVED;
+        await m.save(subsidy);
+      }
+      // 返工后的必改项标记完成，进入待逐项验收；房屋回到整改中（待验收）
+      const plan = await m.findOne(ReviewPlan, { where: { id: check.planId }, relations: ['items'] });
+      if (plan) {
+        for (const it of plan.items.filter((x) => x.required)) {
+          it.status = ItemStatus.DONE;
+          await m.save(it);
+        }
+      }
+      const house = await m.findOne(House, { where: { id: check.houseId } });
+      house.status = HouseStatus.RECTIFYING;
+      await m.save(house);
+
+      await m.save(check);
+      await m.save(
+        m.create(HouseActivity, {
+          houseId: check.houseId,
+          kind: 'MATERIAL',
+          title: '返工复验合格：解除施工队限制、恢复补助拨付计划，重新安排逐项验收',
+          detail: body.requalifyNote,
+          operatorId: u.sub,
+          operatorName: u.name,
+        }),
+      );
+      return check;
+    });
+  }
+
   // ---------- 验收（逐条确认）----------
   async createAcceptance(u: CurrentUser, body: any) {
     const house = await this.getHouseOrFail(body.houseId);
@@ -781,6 +1097,10 @@ export class AppService {
     if (plan.items.filter((i) => i.required).length !== itemResults.length) {
       throw new BadRequestException('必须对方案中的每一个必改项逐条给出验收结论');
     }
+    // 不能只凭一张完工照片关闭任务：验收人员必须勾选"已对照原方案逐项确认"
+    if (!body.confirmedAgainstPlan) {
+      throw new BadRequestException('验收人员须对照原方案逐项确认并勾选确认后才能提交，不能仅凭一张完工照片关闭任务');
+    }
     // 必改项须先完成施工
     for (const it of plan.items.filter((i) => i.required)) {
       if (it.status !== ItemStatus.DONE) {
@@ -788,6 +1108,13 @@ export class AppService {
       }
       const r = itemResults.find((x) => x.itemId === it.id);
       if (!r) throw new BadRequestException(`缺少整改项「${itemTypeLabel(it.type)}」的验收结论`);
+      if (!r.note || !String(r.note).trim()) {
+        throw new BadRequestException(`整改项「${itemTypeLabel(it.type)}」须填写逐项核验意见`);
+      }
+      // 判合格的必改项须留存现场核验照片，逐项取证，不允许用一张总览完工照片代替
+      if (r.result === AcceptanceResult.PASS && !(r.photos?.length > 0)) {
+        throw new BadRequestException(`整改项「${itemTypeLabel(it.type)}」判定合格须上传该项现场核验照片`);
+      }
     }
     const anyFail = itemResults.some((r) => r.result === AcceptanceResult.FAIL);
     const overall = anyFail ? AcceptanceResult.FAIL : AcceptanceResult.PASS;
@@ -801,6 +1128,7 @@ export class AppService {
           inspectorName: u.name,
           acceptedAt: new Date(),
           overall,
+          confirmedAgainstPlan: true,
           comment: body.comment || '',
         }),
       );
@@ -979,7 +1307,7 @@ export class AppService {
     const house = await this.getHouseOrFail(id);
     const [
       inspections, plans, notices, evacuations, stakeholders, consultations, issues,
-      family, cplan, subsidy, logs, acceptances, close, rechecks, activities,
+      family, cplan, subsidy, logs, materialChecks, acceptances, close, rechecks, activities,
     ] = await Promise.all([
       this.inspections.find({ where: { houseId: id }, order: { inspectedAt: 'DESC' } }),
       this.plans.find({ where: { houseId: id }, order: { reviewedAt: 'DESC' }, relations: ['items'] }),
@@ -992,6 +1320,7 @@ export class AppService {
       this.cplans.findOne({ where: { houseId: id }, relations: ['budgetItems'] }),
       this.subsidies.findOne({ where: { houseId: id } }),
       this.logs.find({ where: { houseId: id }, order: { recordedAt: 'DESC' } }),
+      this.materialChecks.find({ where: { houseId: id }, order: { raisedAt: 'DESC' } }),
       this.acceptances.find({ where: { houseId: id }, order: { acceptedAt: 'DESC' }, relations: ['itemResults'] }),
       this.closes.findOne({ where: { houseId: id } }),
       this.rechecks.find({ where: { houseId: id }, order: { checkedAt: 'DESC' } }),
@@ -1000,7 +1329,7 @@ export class AppService {
     const blockingIssues = issues.filter((i) => i.blocksWorkflow && i.status !== IssueStatus.RESOLVED);
     return {
       house, inspections, plans, notices, evacuations, stakeholders, consultations, issues, blockingIssues,
-      family, constructionPlan: cplan, subsidy, constructionLogs: logs, acceptances, close, rechecks, activities,
+      family, constructionPlan: cplan, subsidy, constructionLogs: logs, materialChecks, acceptances, close, rechecks, activities,
     };
   }
 
@@ -1023,7 +1352,7 @@ export class AppService {
       if (isHigh) {
         highRisk++;
         t.highRisk++;
-        if ([HouseStatus.STOPPED, HouseStatus.EVACUATED, HouseStatus.RECTIFYING, HouseStatus.PENDING_ACCEPTANCE, HouseStatus.CLOSED, HouseStatus.ACCEPTANCE_FAILED].includes(h.status)) {
+        if ([HouseStatus.STOPPED, HouseStatus.EVACUATED, HouseStatus.RECTIFYING, HouseStatus.REWORK, HouseStatus.PENDING_ACCEPTANCE, HouseStatus.CLOSED, HouseStatus.ACCEPTANCE_FAILED].includes(h.status)) {
           highRiskStopped++;
         }
       }
@@ -1043,7 +1372,7 @@ export class AppService {
       .createQueryBuilder('h')
       .where('h.riskLevel IN (:...rs)', { rs: [RiskLevel.SUSPEND, RiskLevel.EVACUATE] })
       .andWhere('h.status NOT IN (:...ss)', {
-        ss: [HouseStatus.STOPPED, HouseStatus.EVACUATED, HouseStatus.RECTIFYING, HouseStatus.PENDING_ACCEPTANCE, HouseStatus.CLOSED, HouseStatus.ACCEPTANCE_FAILED],
+        ss: [HouseStatus.STOPPED, HouseStatus.EVACUATED, HouseStatus.RECTIFYING, HouseStatus.REWORK, HouseStatus.PENDING_ACCEPTANCE, HouseStatus.CLOSED, HouseStatus.ACCEPTANCE_FAILED],
       });
     if (township) qbStopped.andWhere('h.township = :t', { t: township });
     const notStopped = await qbStopped.getMany();
@@ -1064,17 +1393,25 @@ export class AppService {
     const subQb = this.subsidies.createQueryBuilder('s').leftJoin(House, 'h', 'h.id::text = s."houseId"::text');
     if (township) subQb.andWhere('h.township = :t', { t: township });
     const subsidies = await subQb.getMany();
-    const subsidySummary = { draft: 0, submitted: 0, approved: 0, rejected: 0, paid: 0, paidAmount: 0 };
+    const subsidySummary = { draft: 0, submitted: 0, approved: 0, rejected: 0, paid: 0, paidAmount: 0, suspended: 0, pausedAmount: 0 };
     for (const s of subsidies) {
       if (s.status === SubsidyStatus.DRAFT) subsidySummary.draft++;
       if (s.status === SubsidyStatus.SUBMITTED) subsidySummary.submitted++;
       if (s.status === SubsidyStatus.APPROVED) subsidySummary.approved++;
       if (s.status === SubsidyStatus.REJECTED) subsidySummary.rejected++;
+      if (s.status === SubsidyStatus.SUSPENDED || s.paymentPaused) {
+        subsidySummary.suspended++;
+        subsidySummary.pausedAmount += Number(s.amount);
+      }
       if (s.status === SubsidyStatus.PAID) {
         subsidySummary.paid++;
         subsidySummary.paidAmount += Number(s.amount);
       }
     }
+
+    // 限制接单施工队
+    const restrictedTeams = await this.teams.find({ where: { restricted: true } });
+    const restrictedTeamSummary = restrictedTeams.map((t) => ({ id: t.id, name: t.name, qualificationNo: t.qualificationNo, restrictedReason: t.restrictedReason, restrictedAt: t.restrictedAt }));
 
     // 整改项完成情况
     const planQb = this.items.createQueryBuilder('it').leftJoin(ReviewPlan, 'p', 'p.id::text = it."planId"::text').leftJoin(House, 'h', 'h.id::text = p."houseId"::text');
@@ -1102,6 +1439,8 @@ export class AppService {
       notStoppedHouses: notStopped.map((h) => ({ id: h.id, code: h.code, township: h.township, village: h.village, ownerName: h.ownerName, riskLevel: h.riskLevel, status: h.status })),
       issuesByType,
       subsidySummary,
+      restrictedTeams: restrictedTeamSummary,
+      restrictedTeamCount: restrictedTeamSummary.length,
       itemByType,
       closureRate: houses.length ? Number((closed / houses.length).toFixed(2)) : 0,
     };
@@ -1116,7 +1455,15 @@ export function houseStatusLabel(s: HouseStatus) {
   return {
     PENDING_REVIEW: '待复核', IN_PLAN: '已出方案', NOTIFIED: '已告知', STOPPED: '已停用',
     EVACUATED: '已转移', RECTIFYING: '整改中', PENDING_ACCEPTANCE: '待销号', ACCEPTANCE_FAILED: '验收不通过',
-    CLOSED: '已销号', REBOUND: '问题反弹', REFUSED: '拒绝整改',
+    REWORK: '返工整改', CLOSED: '已销号', REBOUND: '问题反弹', REFUSED: '拒绝整改',
+  }[s] || s;
+}
+export function materialCheckStatusLabel(s: string) {
+  return {
+    PENDING_EVIDENCE: '待施工队举证',
+    UNDER_REVIEW: '待验收判定',
+    CONFIRMED_SWAP: '偷换属实·返工中',
+    EVIDENCE_OK: '抽查/复验通过',
   }[s] || s;
 }
 export function itemTypeLabel(t: string) {

@@ -138,6 +138,37 @@ export class AppController {
     return this.svc.setItemStatus(req.user, id, body.status);
   }
 
+  // ---------- 施工材料抽查 ----------
+  @Post('material-checks')
+  @Roles(UserRole.ACCEPTOR, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  createMaterialCheck(@Body() body: any, @Req() req: any) {
+    return this.svc.createMaterialCheck(req.user, body);
+  }
+
+  @Post('material-checks/:id/evidence')
+  @Roles(UserRole.TEAM, UserRole.TOWNSHIP_REVIEWER, UserRole.GRID_WORKER, UserRole.COUNTY_ADMIN)
+  submitEvidence(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.submitMaterialEvidence(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/verdict')
+  @Roles(UserRole.ACCEPTOR, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  verdictMaterialCheck(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.verdictMaterialCheck(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/rework')
+  @Roles(UserRole.TEAM, UserRole.TOWNSHIP_REVIEWER, UserRole.GRID_WORKER, UserRole.COUNTY_ADMIN)
+  submitRework(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.submitRework(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/requalify')
+  @Roles(UserRole.ACCEPTOR, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  requalify(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.requalifyMaterialCheck(req.user, id, body || {});
+  }
+
   // ---------- 补助 ----------
   @Get('houses/:id/subsidy-guards')
   subsidyGuards(@Param('id') id: string) {

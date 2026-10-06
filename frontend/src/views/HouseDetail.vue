@@ -63,6 +63,10 @@
           <tab-construction :archive="a" @reload="load" />
         </el-tab-pane>
 
+        <el-tab-pane label="材料抽查" name="material">
+          <tab-material :archive="a" @reload="load" />
+        </el-tab-pane>
+
         <el-tab-pane label="补助" name="subsidy">
           <tab-subsidy :archive="a" @reload="load" />
         </el-tab-pane>
@@ -84,6 +88,7 @@ import TabReview from '../components/TabReview.vue';
 import TabNotice from '../components/TabNotice.vue';
 import TabIssues from '../components/TabIssues.vue';
 import TabConstruction from '../components/TabConstruction.vue';
+import TabMaterial from '../components/TabMaterial.vue';
 import TabSubsidy from '../components/TabSubsidy.vue';
 import TabAcceptance from '../components/TabAcceptance.vue';
 

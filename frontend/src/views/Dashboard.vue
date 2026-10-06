@@ -58,13 +58,25 @@
             <el-descriptions-item label="待乡镇复核">{{ d.subsidySummary?.submitted }}</el-descriptions-item>
             <el-descriptions-item label="已批准（待销号后发）">{{ d.subsidySummary?.approved }}</el-descriptions-item>
             <el-descriptions-item label="已驳回">{{ d.subsidySummary?.rejected }}</el-descriptions-item>
+            <el-descriptions-item label="拨付暂停（偷换材料）">
+              <el-tag :type="d.subsidySummary?.suspended ? 'danger' : 'success'">{{ d.subsidySummary?.suspended || 0 }} 户 / ¥{{ (d.subsidySummary?.pausedAmount || 0).toLocaleString() }}</el-tag>
+            </el-descriptions-item>
             <el-descriptions-item label="已发放">{{ d.subsidySummary?.paid }} 户</el-descriptions-item>
             <el-descriptions-item label="累计发放金额"><b class="money">¥{{ (d.subsidySummary?.paidAmount || 0).toLocaleString() }}</b></el-descriptions-item>
           </el-descriptions>
-          <div class="section-hint">补助仅在验收销号后发放，防止“带病拨款”；存在资格争议未办结的不得批准。</div>
+          <div class="section-hint">补助仅在验收销号后发放，防止“带病拨款”；存在资格争议未办结的不得批准；材料抽查偷换属实的，补助拨付自动暂停，返工复验合格后方恢复并按重排计划拨付。</div>
         </el-card>
       </el-col>
     </el-row>
+
+    <el-alert v-if="d.restrictedTeams?.length" type="error" show-icon :closable="false" style="margin:14px 0"
+      :title="`限制接单施工队（${d.restrictedTeamCount} 支）——材料抽查偷换属实，解除限制前不得承接新工程`" />
+    <el-table v-if="d.restrictedTeams?.length" :data="d.restrictedTeams" size="small" border style="margin-bottom:14px">
+      <el-table-column prop="name" label="施工队" min-width="180" />
+      <el-table-column prop="qualificationNo" label="资质编号" width="170" />
+      <el-table-column prop="restrictedReason" label="限制原因（偷换材料）" min-width="240" />
+      <el-table-column label="列入时间" width="170"><template #default="{row}">{{ fmtDate(row.restrictedAt) }}</template></el-table-column>
+    </el-table>
 
     <el-row :gutter="14" style="margin-top:14px">
       <el-col :span="12">
@@ -120,7 +132,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import http from '../api';
-import { RISK, STATUS, ISSUE_TYPES, ITEM_TYPES } from '../labels';
+import { RISK, STATUS, ISSUE_TYPES, ITEM_TYPES, fmtDate } from '../labels';
 
 const d = ref({});
 const loading = ref(false);
