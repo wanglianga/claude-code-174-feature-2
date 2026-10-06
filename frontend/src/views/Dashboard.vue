@@ -57,6 +57,7 @@
             <el-descriptions-item label="资格校验未过/补材料">{{ d.subsidySummary?.draft }}</el-descriptions-item>
             <el-descriptions-item label="待乡镇复核">{{ d.subsidySummary?.submitted }}</el-descriptions-item>
             <el-descriptions-item label="已批准（待销号后发）">{{ d.subsidySummary?.approved }}</el-descriptions-item>
+            <el-descriptions-item label="拨付暂停（材料偷换）">{{ d.subsidySummary?.suspended }}</el-descriptions-item>
             <el-descriptions-item label="已驳回">{{ d.subsidySummary?.rejected }}</el-descriptions-item>
             <el-descriptions-item label="已发放">{{ d.subsidySummary?.paid }} 户</el-descriptions-item>
             <el-descriptions-item label="累计发放金额"><b class="money">¥{{ (d.subsidySummary?.paidAmount || 0).toLocaleString() }}</b></el-descriptions-item>
@@ -100,6 +101,33 @@
         </el-card>
       </el-col>
     </el-row>
+
+    <el-card shadow="never" style="margin-top:14px">
+      <template #header>施工材料抽查与限制接单名单</template>
+      <el-row :gutter="16">
+        <el-col :span="9">
+          <el-descriptions :column="2" size="small" border>
+            <el-descriptions-item label="抽查总数">{{ d.materialCheckSummary?.total || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="待举证">{{ d.materialCheckSummary?.open || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="待判定">{{ d.materialCheckSummary?.evidence || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="偷换属实·返工中">
+              <el-tag size="small" type="danger">{{ d.materialCheckSummary?.confirmed || 0 }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="澄清合格">{{ d.materialCheckSummary?.cleared || 0 }}</el-descriptions-item>
+            <el-descriptions-item label="返工复验通过">{{ d.materialCheckSummary?.reworked || 0 }}</el-descriptions-item>
+          </el-descriptions>
+          <div class="section-hint">抽查判定偷换属实自动触发：施工队限制接单、补助暂停、退回返工、重排验收与拨付节点、返工逐项复验。</div>
+        </el-col>
+        <el-col :span="15">
+          <el-table :data="d.restrictedTeams || []" size="small" border>
+            <el-table-column prop="name" label="限制接单施工队" min-width="170" />
+            <el-table-column prop="qualificationNo" label="资质编号" width="150" />
+            <el-table-column prop="restrictReason" label="限制原因（偷换材料）" min-width="220" />
+          </el-table>
+          <el-empty v-if="!(d.restrictedTeams||[]).length" description="暂无限制接单施工队" :image-size="50" />
+        </el-col>
+      </el-row>
+    </el-card>
 
     <el-card shadow="never" style="margin-top:14px">
       <template #header>整改措施完成情况（按整改项）</template>

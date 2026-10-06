@@ -119,6 +119,49 @@ export class AppController {
     return this.svc.createTeam(body);
   }
 
+  @Post('teams/:id/lift-restriction')
+  @Roles(UserRole.COUNTY_ADMIN)
+  liftRestriction(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.liftTeamRestriction(req.user, id, body || {});
+  }
+
+  // ---------- 施工材料抽查 ----------
+  @Post('material-checks')
+  @Roles(UserRole.ACCEPTOR, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  createMaterialCheck(@Body() body: any, @Req() req: any) {
+    return this.svc.createMaterialCheck(req.user, body);
+  }
+
+  @Post('material-checks/:id/evidence')
+  @Roles(UserRole.TEAM, UserRole.TOWNSHIP_REVIEWER, UserRole.GRID_WORKER, UserRole.COUNTY_ADMIN)
+  submitEvidence(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.submitMaterialEvidence(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/verdict')
+  @Roles(UserRole.ACCEPTOR, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  verdictCheck(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.verdictMaterialCheck(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/schedule')
+  @Roles(UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  scheduleRework(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.scheduleRework(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/rework')
+  @Roles(UserRole.TEAM, UserRole.TOWNSHIP_REVIEWER, UserRole.GRID_WORKER, UserRole.COUNTY_ADMIN)
+  submitRework(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.submitRework(req.user, id, body || {});
+  }
+
+  @Post('material-checks/:id/review')
+  @Roles(UserRole.ACCEPTOR, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)
+  reviewRework(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    return this.svc.reviewRework(req.user, id, body || {});
+  }
+
   // ---------- 施工计划 ----------
   @Post('construction-plans')
   @Roles(UserRole.FARMER, UserRole.TOWNSHIP_REVIEWER, UserRole.COUNTY_ADMIN)

@@ -12,6 +12,7 @@ export const STATUS = {
   STOPPED: { label: '已停用', type: 'danger' },
   EVACUATED: { label: '已转移', type: 'danger' },
   RECTIFYING: { label: '整改中', type: 'warning' },
+  REWORK: { label: '返工中（材料偷换）', type: 'danger' },
   PENDING_ACCEPTANCE: { label: '待销号', type: 'success' },
   ACCEPTANCE_FAILED: { label: '验收不通过', type: 'danger' },
   CLOSED: { label: '已销号', type: 'success' },
@@ -79,8 +80,22 @@ export const SUBSIDY_STATUS = {
   DRAFT: { label: '校验未过/补充材料中', type: 'info' },
   SUBMITTED: { label: '待乡镇复核', type: 'warning' },
   APPROVED: { label: '已批准（待销号发放）', type: 'primary' },
+  SUSPENDED: { label: '拨付暂停（材料偷换）', type: 'danger' },
   REJECTED: { label: '已驳回', type: 'danger' },
   PAID: { label: '已发放', type: 'success' },
+};
+
+export const MATERIAL_CHECK_STATUS = {
+  OPEN: { label: '待施工队举证', type: 'danger' },
+  EVIDENCE_SUBMITTED: { label: '已举证·待判定', type: 'warning' },
+  CONFIRMED_SWAP: { label: '偷换属实·返工中', type: 'danger' },
+  CLEARED: { label: '澄清合格', type: 'success' },
+  REWORKED: { label: '返工复验通过', type: 'success' },
+};
+
+export const MATERIAL_CHECK_VERDICT = {
+  SWAP: '偷换属实',
+  MATCH: '比对一致（澄清）',
 };
 
 export const ROLE_LABELS = {
@@ -100,6 +115,7 @@ export const ACTIVITY_KIND = {
   PLAN: '施工计划',
   SUBSIDY: '补助',
   MATERIAL: '材料核验',
+  MATERIAL_CHECK: '材料抽查',
   CONSTRUCTION: '施工',
   ACCEPTANCE: '验收',
   CLOSE: '销号',

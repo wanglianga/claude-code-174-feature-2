@@ -17,6 +17,7 @@ import {
   HouseActivity,
   Inspection,
   IssueRecord,
+  MaterialCheck,
   NoticeRecord,
   RectificationItem,
   RecheckRecord,
@@ -35,7 +36,7 @@ const entities = [
   User, House, Inspection, ReviewPlan, RectificationItem, NoticeRecord, EvacuationRecord,
   Stakeholder, Consultation, IssueRecord, FamilyProfile, ConstructionTeam, ConstructionPlan,
   BudgetItem, SubsidyApplication, ConstructionLog, Acceptance, AcceptanceItemResult,
-  CloseRecord, RecheckRecord, HouseActivity,
+  CloseRecord, RecheckRecord, HouseActivity, MaterialCheck,
 ];
 
 @Module({

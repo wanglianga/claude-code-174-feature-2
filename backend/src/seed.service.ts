@@ -199,7 +199,7 @@ export class SeedService implements OnApplicationBootstrap {
       await this.svc.paySubsidy(county, paid.id);
     }
 
-    // ---------- 房屋B：整改中，偷换材料被系统拦截，补助已批 ----------
+    // ---------- 房屋B：完工照片后钢梁抽查，规格与方案不一致，待施工队举证 ----------
     {
       const insp = await this.svc.createInspection(grid2, {
         code: 'NF-YL-000002',
@@ -213,10 +213,10 @@ export class SeedService implements OnApplicationBootstrap {
       const plan = await this.svc.createReview(town2, {
         inspectionId: insp.inspection.id,
         decision: RiskLevel.SUSPEND,
-        requirement: '暂停一层经营，加固后墙，修复屋面，经验收合格后方可恢复经营。',
+        requirement: '暂停一层经营，加固后墙（架设钢梁），修复屋面，经验收合格后方可恢复经营。',
         deadline: this.dateStr(20),
         items: [
-          { type: 'REINFORCE_WALL', description: '后墙增设构造柱并加固' },
+          { type: 'REINFORCE_WALL', description: '后墙增设构造柱并架设 Q355B 钢梁加固' },
           { type: 'REPAIR_ROOF', description: '屋面重新做防水层并更换破损檩条' },
           { type: 'EVICT_TENANTS', description: '停业期间清退店内堆货经营，劝离留宿人员' },
         ],
@@ -238,19 +238,44 @@ export class SeedService implements OnApplicationBootstrap {
           { name: '防水卷材', spec: 'SBS 4mm', qty: 120, unit: '㎡', unitPrice: 45 },
           { name: '商品混凝土', spec: 'C30', qty: 8, unit: 'm³', unitPrice: 480 },
           { name: '钢筋', spec: 'HRB400 14mm', qty: 1.2, unit: '吨', unitPrice: 4600 },
+          { name: '钢梁', spec: 'Q355B HN200×100（腹板≥5.5mm）', qty: 6, unit: '根', unitPrice: 820 },
         ],
       });
       const sub = await this.svc.submitSubsidy(farmer2, houseId, { amount: 12000 });
       await this.svc.reviewSubsidy(town2, sub.application.id, { approved: true, comment: '残疾家庭，同意补助，资金待销号后发放' });
+
+      // 施工过程：台账材料与预算一致，施工队提交加固完成照片，各必改项报完成
       await this.svc.addConstructionLog(teamUser, {
-        houseId, stage: '屋面修复', content: '首批防水卷材进场', progressPercent: 20,
-        materialName: '防水卷材', materialSpec: '非标 2.5mm',
+        houseId, stage: '屋面修复', content: '屋面防水卷材铺设完成，淋水试验无渗漏', progressPercent: 50,
+        materialName: '防水卷材', materialSpec: 'SBS 4mm', photos: ['/uploads/demo-roof-progress.jpg'],
+        itemId: plan.items.find((i) => i.type === 'REPAIR_ROOF').id, itemStatus: ItemStatus.DONE,
       });
+      await this.svc.addConstructionLog(teamUser, {
+        houseId, stage: '墙体加固', content: '后墙构造柱浇筑完成', progressPercent: 80,
+        materialName: '商品混凝土', materialSpec: 'C30',
+        itemId: plan.items.find((i) => i.type === 'REINFORCE_WALL').id, itemStatus: ItemStatus.IN_PROGRESS,
+      });
+      await this.svc.addConstructionLog(teamUser, {
+        houseId, stage: '墙体加固', content: '后墙6根钢梁架设完成，施工队提交加固完成照片申请验收', progressPercent: 100,
+        materialName: '钢梁', materialSpec: 'Q355B HN200×100（腹板≥5.5mm）', photos: ['/uploads/demo-steel-done.jpg'],
+        itemId: plan.items.find((i) => i.type === 'REINFORCE_WALL').id, itemStatus: ItemStatus.DONE,
+      });
+      await this.svc.setItemStatus(town2, plan.items.find((i) => i.type === 'EVICT_TENANTS').id, ItemStatus.DONE);
+
+      // 验收人员对照完工照片现场抽查：钢梁钢印/实测规格与方案不一致，发起材料抽查
+      await this.svc.createMaterialCheck(acceptor, {
+        houseId,
+        suspectItem: '钢梁',
+        planSpec: 'Q355B HN200×100（腹板≥5.5mm）',
+        foundSpec: '钢印 Q235，实测 HN198×99、腹板厚 4.5mm',
+        suspectNote: '施工队提交加固完成照片后抽查发现钢梁规格与方案不一致，平台要求上传材料发票、进场照片和现场测量结果',
+        completionPhotos: ['/uploads/demo-steel-done.jpg'],
+      });
+
       await this.svc.upsertStakeholder(houseId, {
         type: StakeholderType.OPERATOR, name: '李秀兰（经营户）', stance: Stance.NEUTRAL,
         influenceNote: '担心停业损失，希望缩短工期；同意先加固后经营',
       });
-      void plan;
     }
 
     // ---------- 房屋C：户主+租户抵触，尚未告知，协商中 ----------

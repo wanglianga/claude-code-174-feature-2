@@ -47,6 +47,12 @@
             <el-alert type="info" :closable="false" title="资金发放闸：未销号前发放按钮将被后端拒绝。" style="margin-bottom:8px" />
             <el-button type="warning" @click="pay">验收销号后发放补助</el-button>
           </div>
+          <div v-if="archive.subsidy?.status==='SUSPENDED'" style="margin-top:10px">
+            <el-alert type="error" :closable="false" show-icon
+              title="补助拨付已暂停：施工材料抽查判定偷换属实。须返工并对照原方案逐项复验通过后，补助恢复为已批准，再按重排计划销号发放。" />
+            <div v-if="payPlanDate" class="sub" style="margin-top:6px">重排补助拨付计划日期：{{ payPlanDate }}</div>
+          </div>
+          <div v-else-if="payPlanDate && archive.subsidy" class="sub" style="margin-top:6px">补助计划拨付日期（返工重排）：{{ payPlanDate }}</div>
           <el-empty v-if="!canApply && !canReview && !(auth.isCounty && archive.subsidy?.status==='APPROVED')" description="暂无补助申请" :image-size="60" />
         </el-card>
       </el-col>
@@ -72,6 +78,7 @@ const canApply = computed(() => ['FARMER', 'TOWNSHIP_REVIEWER', 'COUNTY_ADMIN'].
 const canReview = computed(() => ['TOWNSHIP_REVIEWER', 'COUNTY_ADMIN'].includes(auth.role));
 const budget = computed(() => Number(props.archive.constructionPlan?.budgetTotal || 0));
 const maxAmount = computed(() => Math.min(Math.round(budget.value * 0.7), 50000));
+const payPlanDate = computed(() => (props.archive.materialChecks || []).find((c) => c.newPayPlanDate)?.newPayPlanDate || '');
 
 async function loadGuards() {
   if (!props.archive.house) return;

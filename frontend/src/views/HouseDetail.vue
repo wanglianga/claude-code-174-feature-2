@@ -63,6 +63,10 @@
           <tab-construction :archive="a" @reload="load" />
         </el-tab-pane>
 
+        <el-tab-pane label="材料抽查 · 返工" name="material">
+          <tab-material-check :archive="a" @reload="load" />
+        </el-tab-pane>
+
         <el-tab-pane label="补助" name="subsidy">
           <tab-subsidy :archive="a" @reload="load" />
         </el-tab-pane>
@@ -84,6 +88,7 @@ import TabReview from '../components/TabReview.vue';
 import TabNotice from '../components/TabNotice.vue';
 import TabIssues from '../components/TabIssues.vue';
 import TabConstruction from '../components/TabConstruction.vue';
+import TabMaterialCheck from '../components/TabMaterialCheck.vue';
 import TabSubsidy from '../components/TabSubsidy.vue';
 import TabAcceptance from '../components/TabAcceptance.vue';
 
@@ -95,7 +100,7 @@ const tab = ref('timeline');
 function kindType(k) {
   return {
     INSPECTION: 'primary', REVIEW: 'primary', NOTICE: 'warning', EVACUATE: 'danger',
-    PLAN: 'primary', SUBSIDY: 'warning', MATERIAL: 'danger', CONSTRUCTION: '',
+    PLAN: 'primary', SUBSIDY: 'warning', MATERIAL: 'danger', MATERIAL_CHECK: 'danger', CONSTRUCTION: '',
     ACCEPTANCE: 'success', CLOSE: 'success', RECHECK: 'warning', ISSUE: 'danger', CONSULT: 'info',
   }[k] || '';
 }

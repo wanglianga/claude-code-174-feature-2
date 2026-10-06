@@ -30,40 +30,115 @@ def house_by_code(code, token):
     _, d = req('GET', '/houses?q=' + code, token)
     return d['data'][0]
 
-# ---------- B房屋：偷换材料阻断验收 ----------
+# ---------- B房屋：完工照片后钢梁材料抽查全链路 ----------
 b = house_by_code('NF-YL-000002', county)
 arc_b = req('GET', f"/houses/{b['id']}/archive", county)[1]
 plan_b = arc_b['plans'][0]
-blocking = [i['type'] for i in arc_b['blockingIssues']]
-check('B-偷换材料生成阻断异常', 'MATERIAL_SWAP' in blocking, str(blocking))
+check_b = arc_b['materialChecks'][0]
+results = [{'itemId': it['id'], 'itemType': it['type'], 'result': 'PASS'} for it in plan_b['items'] if it['required']]
 
-# 未解决材料问题前组织验收 -> 拒绝
-results = [{'itemId': it['id'], 'itemType': it['type'], 'result': 'PASS'} for it in plan_b['items']]
+check('B-存在钢梁材料抽查且待举证', check_b['status'] == 'OPEN' and check_b['suspectItem'] == '钢梁', check_b['status'])
+check('B-抽查规格已记录', 'Q355B' in (check_b['planSpec'] or '') and 'Q235' in (check_b['foundSpec'] or ''))
+# 抽查未结案组织验收 -> 拒绝（不能只凭完工照片验收）
 st, d = req('POST', '/acceptances', acceptor, {'houseId': b['id'], 'itemResults': results})
-check('B-阻断异常未办结禁止验收', st == 400, d.get('message', '')[:60])
+check('B-抽查未结案禁止验收', st == 400 and '抽查' in d['message'], d.get('message', '')[:60])
+# 补助资格校验中“材料抽查”项不通过
+guards = req('GET', f"/houses/{b['id']}/subsidy-guards", county)[1]
+check('B-补助校验含材料抽查闸', any(g['label'] == '材料抽查' and not g['ok'] for g in guards))
+# 已批准补助在抽查未结案时禁止发放（拨付暂停）
+st, d = req('POST', f"/subsidies/{arc_b['subsidy']['id']}/pay", county)
+check('B-抽查期间补助暂停拨付', st == 400 and ('抽查' in d['message'] or '暂停' in d['message']), d.get('message', '')[:60])
+# 施工队不能用普通进度上报绕过抽查
+st, d = req('POST', '/construction-logs', team, {'houseId': b['id'], 'stage': '墙体加固', 'content': '继续施工', 'progressPercent': 100})
+check('B-待举证期间禁止普通进度上报', st == 400 and '举证' in d['message'], d.get('message', '')[:60])
 
-# 无资质施工队不能被选择（尝试用不存在/失效队伍由乡镇创建后提交）
-_, teams = req('GET', '/teams', county)[0], None
-_, teamlist = req('GET', '/teams', county)
-bad_team = [t for t in teamlist if not t['qualified']][0]
+# 举证三要素缺一不可
+st, d = req('POST', f"/material-checks/{check_b['id']}/evidence", team,
+            {'invoiceDocs': [], 'siteEntryPhotos': ['/uploads/e.jpg'], 'measurementResult': 'x'})
+check('B-举证缺发票被拒', st == 400)
+st, d = req('POST', f"/material-checks/{check_b['id']}/evidence", team, {
+    'invoiceDocs': ['/uploads/invoice.jpg'], 'siteEntryPhotos': ['/uploads/entry.jpg'],
+    'measurementResult': '6根梁钢印均为Q235；卡尺实测梁高198mm、腹板厚4.5mm'})
+check('B-三要素齐全可举证', st in (200, 201), str(d)[:80])
+# 待判定仍不能验收
+st, d = req('POST', '/acceptances', acceptor, {'houseId': b['id'], 'itemResults': results})
+check('B-待判定仍禁止验收', st == 400 and '抽查' in d['message'], d.get('message', '')[:60])
+
+# 验收人员判定偷换属实
+st, d = req('POST', f"/material-checks/{check_b['id']}/verdict", acceptor,
+            {'verdict': 'SWAP', 'note': '发票为Q235非标梁，与方案Q355B不符'})
+check('B-判定偷换属实', st in (200, 201), str(d)[:80])
+arc_b = req('GET', f"/houses/{b['id']}/archive", county)[1]
+check_b = arc_b['materialChecks'][0]
+check('B-房屋退回返工', b2 := (req('GET', '/houses?q=NF-YL-000002', county)[1]['data'][0]['status']) == 'REWORK', b2)
+check('B-补助拨付暂停', arc_b['subsidy']['status'] == 'SUSPENDED', arc_b['subsidy']['status'])
+check('B-偷换生成阻断异常', any(i['type'] == 'MATERIAL_SWAP' and i['blocksWorkflow'] and i['status'] != 'RESOLVED' for i in arc_b['issues']))
+teamA = [t for t in req('GET', '/teams', county)[1] if t['name'] == '安泰农房加固施工队'][0]
+check('B-施工队进入限制接单名单', teamA['restricted'] is True)
+# 返工前不能提交整改（平台须先重排节点）
+st, d = req('POST', f"/material-checks/{check_b['id']}/rework", team,
+            {'reworkSummary': 'x', 'reworkPhotos': ['/uploads/r.jpg'], 'reworkMeasurement': ['Q355B合格']})
+check('B-未重排验收节点不能提交返工', st == 400 and '验收节点' in d['message'], d.get('message', '')[:60])
+
+# 平台重新安排验收节点与补助拨付计划
+st, d = req('POST', f"/material-checks/{check_b['id']}/schedule", town2, {
+    'reworkDeadline': '2026-10-20', 'newAcceptanceDate': '2026-10-22', 'newPayPlanDate': '2026-10-30'})
+check('B-重排验收与拨付节点', st in (200, 201), str(d)[:80])
+# 返工材料不全被拒（不能只传一张完工照片）
+st, d = req('POST', f"/material-checks/{check_b['id']}/rework", team,
+            {'reworkSummary': '已更换', 'reworkPhotos': ['/uploads/r.jpg'], 'reworkMeasurement': []})
+check('B-返工缺实测证明被拒', st == 400)
+st, d = req('POST', f"/material-checks/{check_b['id']}/rework", team, {
+    'reworkSummary': '拆除6根Q235梁，全部更换为Q355B HN200×100，腹板5.6mm',
+    'reworkPhotos': ['/uploads/rework1.jpg', '/uploads/rework2.jpg'],
+    'reworkMeasurement': ['第三方复验：Q355B 腹板5.6mm', '材质合格单 MTC-88']})
+check('B-返工整改可提交', st in (200, 201), str(d)[:80])
+
+# 返工复验：必须对照原方案逐项确认
+st, d = req('POST', f"/material-checks/{check_b['id']}/review", acceptor,
+            {'itemResults': results[:1]})
+check('B-复验缺项被拒（不能只凭一张照片结案）', st == 400 and '逐项' in d['message'], d.get('message', '')[:60])
+bad_results = [dict(r, result='FAIL') if i == 0 else r for i, r in enumerate(results)]
+st, d = req('POST', f"/material-checks/{check_b['id']}/review", acceptor, {'itemResults': bad_results})
+check('B-复验任一不合格不能结案', st == 400)
+st, d = req('POST', f"/material-checks/{check_b['id']}/review", acceptor,
+            {'itemResults': [dict(r, note='返工后对照方案实测合格') for r in results], 'comment': '6根钢梁已更换，逐项复验合格'})
+check('B-逐项复验通过并重新验收', st in (200, 201), str(d)[:80])
+arc_b = req('GET', f"/houses/{b['id']}/archive", county)[1]
+check_b = arc_b['materialChecks'][0]
+b_status = req('GET', '/houses?q=NF-YL-000002', county)[1]['data'][0]['status']
+check('B-抽查结案状态', check_b['status'] == 'REWORKED', check_b['status'])
+check('B-返工后进入待销号', b_status == 'PENDING_ACCEPTANCE', b_status)
+check('B-补助恢复已批准', arc_b['subsidy']['status'] == 'APPROVED', arc_b['subsidy']['status'])
+check('B-阻断异常已办结', not any(i['type'] == 'MATERIAL_SWAP' and i['blocksWorkflow'] and i['status'] != 'RESOLVED' for i in arc_b['issues']))
+
+# 限制接单解除前不能承接工程（以本户重新提交计划触发校验）
+st, d = req('POST', '/construction-plans', farmer2, {
+    'houseId': b['id'], 'teamId': teamA['id'],
+    'startDate': '2026-10-10', 'endDate': '2026-11-01',
+    'budgetItems': [{'name': '钢梁', 'spec': 'Q355B', 'qty': 1, 'unit': '根', 'unitPrice': 820}]})
+check('B-限制接单施工队被拒', st == 400 and '限制接单' in d['message'], d.get('message', '')[:60])
+# 无资质队伍同样被拒
+bad_team = [t for t in req('GET', '/teams', county)[1] if not t['qualified']][0]
 st, d = req('POST', '/construction-plans', farmer2, {
     'houseId': b['id'], 'teamId': bad_team['id'],
     'startDate': '2026-10-10', 'endDate': '2026-11-01',
-    'budgetItems': [{'name': '防水卷材', 'spec': 'SBS 4mm', 'qty': 10, 'unit': '㎡', 'unitPrice': 45}]})
-check('B-阻断异常时连提交计划也被拦截', st == 400 and '阻断' in d['message'], d.get('message', '')[:60])
+    'budgetItems': [{'name': '钢梁', 'spec': 'Q355B', 'qty': 1, 'unit': '根', 'unitPrice': 820}]})
+check('B-无资质施工队被拒', st == 400 and '资质' in d['message'], d.get('message', '')[:60])
+# 乡镇无权解除限制（403），县级可解除
+st, d = req('POST', f"/teams/{teamA['id']}/lift-restriction", town2, {'note': 'x'})
+check('B-乡镇不能解除限制接单', st == 403)
+st, d = req('POST', f"/teams/{teamA['id']}/lift-restriction", county, {'note': '返工复验合格，解除限制'})
+check('B-县级解除限制接单', st in (200, 201) and d.get('restricted') is False, str(d)[:80])
 
-# 办结材料问题（要求填写处置结果）
-swap = arc_b['issues'][0]
-st, d = req('POST', f"/issues/{swap['id']}/status", town2, {'status': 'RESOLVED'})
-check('B-办结问题必须填处置结果', st == 400)
-st, d = req('POST', f"/issues/{swap['id']}/status", town2,
-            {'status': 'RESOLVED', 'resolution': '清退非标卷材，更换为SBS 4mm合格材料并复验'})
-check('B-问题可办结', st == 201 or st == 200)
+# 复验通过后仍须销号才能发补助；完成销号后发放
+st, d = req('POST', f"/subsidies/{arc_b['subsidy']['id']}/pay", county)
+check('B-未销号仍禁止发补助', st == 400 and '销号' in d['message'], d.get('message', '')[:60])
+st, d = req('POST', '/closes', county, {'houseId': b['id'], 'confirmedAllItems': True, 'confirmedStopUseLifted': True})
+check('B-返工复验后允许销号', st in (200, 201), str(d)[:80])
+st, d = req('POST', f"/subsidies/{arc_b['subsidy']['id']}/pay", county)
+check('B-销号后补助发放', st in (200, 201) and d.get('status') == 'PAID', str(d)[:80])
 
-# 补助已批准但未销号 -> 禁止发放
-sub_b = arc_b['subsidy']
-st, d = req('POST', f"/subsidies/{sub_b['id']}/pay", county)
-check('B-未销号禁止发补助', st == 400 and '销号' in d['message'], d.get('message', '')[:60])
 
 # ---------- C房屋：拒绝整改/租户不搬，告知与开工制约 ----------
 c = house_by_code('NF-QS-000003', county)
@@ -72,7 +147,7 @@ st, d = req('POST', '/notices', grid3, {'houseId': c['id'], 'method': '现场告
                                         'notifiedTo': ['户主'], 'acknowledged': False})
 check('C-暂停使用房屋告知未签收被拒', st == 400 and '签收' in d['message'], d.get('message', '')[:60])
 st, d = req('POST', '/construction-plans', farmer2, {
-    'houseId': c['id'], 'teamId': [t for t in teamlist if t['qualified']][0]['id'],
+    'houseId': c['id'], 'teamId': teamA['id'],
     'startDate': '2026-10-10', 'endDate': '2026-11-10',
     'budgetItems': [{'name': '拆除', 'qty': 1, 'unit': '项', 'unitPrice': 1000}]})
 check('C-阻断问题+未告知禁止开工', st == 400, d.get('message', '')[:60])
